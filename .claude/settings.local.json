@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p ~/.claude/plugins/cache)",
+      "Bash(git clone:*)",
+      "Bash(rm -rf ~/.claude/plugins/cache/superpowers)",
+      "Bash(GIT_SSL_NO_VERIFY=1 git clone --depth 1 https://github.com/obra/superpowers.git ~/.claude/plugins/cache/superpowers)"
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "openspec-agent",
+  "version": "0.2.0",
+  "description": "对话即规范 — 通过自然语言对话生成 Web 应用的 Web 工具",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  },
+  "keywords": [
+    "openspec",
+    "web-generator",
+    "ai"
+  ],
+  "license": "MIT"
+}

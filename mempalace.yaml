@@ -1,0 +1,10 @@
+wing: openspecagent
+rooms:
+- name: superpowers_marketplace
+  description: Files from superpowers-marketplace/
+  keywords:
+  - superpowers_marketplace
+  - superpowers-marketplace
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []

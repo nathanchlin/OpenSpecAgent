@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenSpecAgent</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <span class="toolbar-title">OpenSpecAgent</span>
+    <div class="toolbar-actions">
+      <button class="toolbar-btn" id="btn-new">新建</button>
+      <button class="toolbar-btn" id="btn-export">导出</button>
+    </div>
+  </div>
+
+  <!-- 双栏布局 -->
+  <div class="panels">
+    <!-- 左：对话面板 -->
+    <div class="panel-chat" id="panel-chat">
+      <div class="chat-header">OpenSpecAgent</div>
+      <div class="messages" id="messages">
+        <div class="msg msg-assistant">
+          你好！我是 OpenSpecAgent。<br><br>
+          告诉我你想创建什么样的 Web 应用，我会帮你从设计到实现。<br><br>
+          例如：<br>&#8226; "做一个待办事项应用"<br>&#8226; "帮我做一个登录注册页面"<br>&#8226; "创建一个个人博客首页"
+        </div>
+      </div>
+      <div class="input-area">
+        <textarea id="input" placeholder="描述你想创建的 Web 应用..." rows="1"></textarea>
+        <button class="send-btn" id="send-btn">发送</button>
+      </div>
+    </div>
+
+    <div class="resize-handle" id="resize-chat"></div>
+
+    <!-- 右：预览面板 -->
+    <div class="panel-preview" id="panel-preview">
+      <div class="preview-toolbar">
+        <button class="device-btn active" data-viewport="desktop" title="桌面">&#128187;</button>
+        <button class="device-btn" data-viewport="tablet" title="平板">&#128421;</button>
+        <button class="device-btn" data-viewport="mobile" title="手机">&#128241;</button>
+        <input class="preview-url" id="preview-url" value="/preview/index.html" readonly>
+        <button class="device-btn" id="btn-refresh" title="刷新">&#8635;</button>
+      </div>
+      <iframe class="preview-frame" id="preview-frame" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
