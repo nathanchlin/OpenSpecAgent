@@ -686,6 +686,13 @@ async function startGeneration(specCard) {
     }
     eventSource.close();
 
+    // 用 steps 结果同步所有步骤状态（修复 SSE 重连丢失中间 progress 的问题）
+    if (result.steps && Array.isArray(result.steps)) {
+      for (const s of result.steps) {
+        updateStepper(specCard, { step: s.key, status: s.status });
+      }
+    }
+
     if (result.type === 'success') {
       showCompletion(specCard, result.files, result.review);
       setTimeout(loadPreview, 500);

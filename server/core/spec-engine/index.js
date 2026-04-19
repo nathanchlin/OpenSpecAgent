@@ -133,7 +133,7 @@ class SpecEngine {
 
       const content = response.choices?.[0]?.message?.content || '';
       const reasoning = response.choices?.[0]?.message?.reasoning_content || '';
-      // GLM-5.1 可能将实际内容放在 content 或 reasoning_content
+      // GLM 可能将实际内容放在 content 或 reasoning_content
       const fullContent = content || reasoning;
       return this.parseResponse(fullContent, currentSpec);
     } catch (err) {

@@ -2,7 +2,7 @@ const https = require('https');
 const http = require('http');
 
 /**
- * GLM-5.1 API 客户端
+ * GLM API 客户端
  * 支持流式和非流式响应
  */
 class GLMClient {
