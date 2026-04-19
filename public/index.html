@@ -11,23 +11,27 @@
   <div class="toolbar">
     <span class="toolbar-title">OpenSpecAgent</span>
     <div class="toolbar-actions">
-      <button class="toolbar-btn" id="btn-new">新建</button>
       <button class="toolbar-btn" id="btn-export">导出</button>
     </div>
   </div>
 
-  <!-- 双栏布局 -->
+  <!-- 三栏布局 -->
   <div class="panels">
-    <!-- 左：对话面板 -->
-    <div class="panel-chat" id="panel-chat">
-      <div class="chat-header">OpenSpecAgent</div>
-      <div class="messages" id="messages">
-        <div class="msg msg-assistant">
-          你好！我是 OpenSpecAgent。<br><br>
-          告诉我你想创建什么样的 Web 应用，我会帮你从设计到实现。<br><br>
-          例如：<br>&#8226; "做一个待办事项应用"<br>&#8226; "帮我做一个登录注册页面"<br>&#8226; "创建一个个人博客首页"
-        </div>
+    <!-- 左：会话列表 -->
+    <div class="panel-sessions" id="panel-sessions">
+      <div class="sessions-header">
+        <span>会话</span>
+        <button class="session-add-btn" id="btn-add-session" title="新建会话">+</button>
       </div>
+      <div class="session-list" id="session-list"></div>
+    </div>
+
+    <div class="resize-handle" id="resize-session"></div>
+
+    <!-- 中：对话面板 -->
+    <div class="panel-chat" id="panel-chat">
+      <div class="chat-header" id="chat-header">OpenSpecAgent</div>
+      <div class="messages" id="messages"></div>
       <div class="input-area">
         <textarea id="input" placeholder="描述你想创建的 Web 应用..." rows="1"></textarea>
         <button class="send-btn" id="send-btn">发送</button>
@@ -42,7 +46,7 @@
         <button class="device-btn active" data-viewport="desktop" title="桌面">&#128187;</button>
         <button class="device-btn" data-viewport="tablet" title="平板">&#128421;</button>
         <button class="device-btn" data-viewport="mobile" title="手机">&#128241;</button>
-        <input class="preview-url" id="preview-url" value="/preview/index.html" readonly>
+        <input class="preview-url" id="preview-url" value="" readonly>
         <button class="device-btn" id="btn-refresh" title="刷新">&#8635;</button>
       </div>
       <iframe class="preview-frame" id="preview-frame" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>

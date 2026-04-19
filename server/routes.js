@@ -1,19 +1,65 @@
 // server/routes.js
-// API 路由 — 将 Electron IPC handlers 改写为 Express 路由
+// API 路由 — 多会话版本，所有路由加 :sessionId
 
 const express = require('express');
 const archiver = require('archiver');
 
-function createRoutes(session) {
+function createRoutes(store) {
   const router = express.Router();
 
-  // ── 对话 ──
+  // ── 辅助：获取会话 ──
+  function getSession(req, res) {
+    const session = store.get(req.params.id);
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' });
+      return null;
+    }
+    return session;
+  }
 
-  router.post('/chat', async (req, res) => {
+  // ═══════════════════════════════════════
+  //  会话 CRUD
+  // ═══════════════════════════════════════
+
+  // 列出所有会话
+  router.get('/sessions', (req, res) => {
+    res.json(store.list());
+  });
+
+  // 创建新会话
+  router.post('/sessions', (req, res) => {
+    const { name } = req.body || {};
+    const { id, session } = store.create(name);
+    res.json({ id, name: session.name, createdAt: session.createdAt });
+  });
+
+  // 删除会话
+  router.delete('/sessions/:id', (req, res) => {
+    const ok = store.delete(req.params.id);
+    res.json({ ok });
+  });
+
+  // 重命名会话
+  router.post('/sessions/:id/rename', (req, res) => {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    const ok = store.rename(req.params.id, name);
+    res.json({ ok });
+  });
+
+  // ═══════════════════════════════════════
+  //  对话
+  // ═══════════════════════════════════════
+
+  router.post('/sessions/:id/chat', async (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
+
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: 'message is required' });
 
     session.conversationHistory.push({ role: 'user', content: message });
+    session.touch();
 
     try {
       const specResult = await session.specEngine.processMessage(
@@ -31,6 +77,7 @@ function createRoutes(session) {
         content: specResult.reply,
       });
 
+      store.save(session.id);
       res.json({
         type: specResult.type,
         reply: specResult.reply,
@@ -43,7 +90,10 @@ function createRoutes(session) {
 
   // ── 增量修改 ──
 
-  router.post('/chat/modify', async (req, res) => {
+  router.post('/sessions/:id/chat/modify', async (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
+
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: 'message is required' });
 
@@ -66,6 +116,8 @@ function createRoutes(session) {
         content: result.reply,
       });
 
+      session.touch();
+      store.save(session.id);
       res.json({ type: 'success', reply: result.reply });
     } catch (err) {
       res.json({ type: 'error', reply: `Error: ${err.message}` });
@@ -74,17 +126,26 @@ function createRoutes(session) {
 
   // ── Spec & History ──
 
-  router.get('/spec', (req, res) => {
+  router.get('/sessions/:id/spec', (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
     res.json(session.spec);
   });
 
-  router.get('/history', (req, res) => {
+  router.get('/sessions/:id/history', (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
     res.json(session.conversationHistory);
   });
 
-  // ── 头脑风暴 ──
+  // ═══════════════════════════════════════
+  //  头脑风暴
+  // ═══════════════════════════════════════
 
-  router.post('/brainstorm/start', async (req, res) => {
+  router.post('/sessions/:id/brainstorm/start', async (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
+
     const { spec } = req.body;
     session.spec = spec;
     session.brainstormHistory = [];
@@ -101,13 +162,18 @@ function createRoutes(session) {
     try {
       const result = await pipeline.startBrainstorm(specJson);
       session.brainstormHistory.push({ role: 'assistant', content: result.reply });
+      session.touch();
+      store.save(session.id);
       res.json({ reply: result.reply, infoSufficient: result.infoSufficient });
     } catch (err) {
       res.json({ reply: '头脑风暴启动失败: ' + err.message, infoSufficient: false });
     }
   });
 
-  router.post('/brainstorm/chat', async (req, res) => {
+  router.post('/sessions/:id/brainstorm/chat', async (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
+
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: 'message is required' });
 
@@ -121,15 +187,22 @@ function createRoutes(session) {
     try {
       const result = await session.activePipeline.continueBrainstorm(specJson, session.brainstormHistory);
       session.brainstormHistory.push({ role: 'assistant', content: result.reply });
+      session.touch();
+      store.save(session.id);
       res.json({ reply: result.reply, infoSufficient: result.infoSufficient });
     } catch (err) {
       res.json({ reply: '头脑风暴失败: ' + err.message, infoSufficient: false });
     }
   });
 
-  // ── 生成管道 ──
+  // ═══════════════════════════════════════
+  //  生成管道
+  // ═══════════════════════════════════════
 
-  router.post('/generate', async (req, res) => {
+  router.post('/sessions/:id/generate', async (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
+
     if (!session.spec) {
       return res.json({ type: 'error', error: 'No spec available' });
     }
@@ -147,7 +220,8 @@ function createRoutes(session) {
       );
     }
 
-    // 不等待完成——通过 SSE 推送进度
+    const sessionId = session.id;
+
     session.activePipeline.runGeneration(session.spec, brainstormSummary)
       .then((result) => {
         session.activePipeline = null;
@@ -158,6 +232,8 @@ function createRoutes(session) {
         }
 
         session.generatedFiles = result.files;
+        session.touch();
+        store.save(sessionId);
         session.broadcastDone({
           type: 'success',
           files: Object.keys(result.files),
@@ -170,17 +246,21 @@ function createRoutes(session) {
         session.broadcastDone({ type: 'error', error: err.message, steps: [] });
       });
 
-    // 立即返回，前端通过 SSE 接收进度
     res.json({ status: 'started' });
   });
 
   // SSE 进度流
-  router.get('/generate/stream', (req, res) => {
+  router.get('/sessions/:id/generate/stream', (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
     session.addSSEClient(res);
   });
 
   // 取消生成
-  router.post('/generate/cancel', (req, res) => {
+  router.post('/sessions/:id/generate/cancel', (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
+
     if (session.activePipeline) {
       session.activePipeline.cancel();
       res.json({ ok: true });
@@ -191,7 +271,10 @@ function createRoutes(session) {
 
   // ── 导出 zip ──
 
-  router.get('/export', (req, res) => {
+  router.get('/sessions/:id/export', (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
+
     const files = session.getGeneratedFiles();
     if (Object.keys(files).length === 0) {
       return res.status(404).json({ error: 'No files to export' });
@@ -212,8 +295,12 @@ function createRoutes(session) {
 
   // ── 重置会话 ──
 
-  router.post('/reset', (req, res) => {
+  router.post('/sessions/:id/reset', (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
+
     session.reset();
+    store.save(session.id);
     res.json({ ok: true });
   });
 

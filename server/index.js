@@ -1,11 +1,11 @@
 // server/index.js
-// Express 入口
+// Express 入口 — 多会话版本
 
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const { createRoutes } = require('./routes');
-const { SessionManager } = require('./session');
+const { SessionStore } = require('./session');
 
 // ── 加载 .env ──
 const envPath = path.join(__dirname, '..', '.env');
@@ -24,20 +24,33 @@ if (fs.existsSync(envPath)) {
 const app = express();
 app.use(express.json());
 
-// ── 初始化会话 ──
-const session = new SessionManager();
+// ── 初始化会话仓库 ──
+const store = new SessionStore();
+store.loadAll();
+
+// 退出时保存
+process.on('SIGINT', () => {
+  console.log('\nShutting down...');
+  store.saveAll();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  store.saveAll();
+  process.exit(0);
+});
 
 // ── API 路由 ──
-app.use('/api', createRoutes(session));
+app.use('/api', createRoutes(store));
 
-// ── 预览路由（从内存提供生成的文件）──
-app.use('/preview', (req, res, next) => {
+// ── 预览路由（从内存提供生成的文件，按会话隔离）──
+app.use('/preview/:sessionId', (req, res, next) => {
+  const session = store.get(req.params.sessionId);
+  if (!session) return res.status(404).send('Session not found');
+
   const files = session.getGeneratedFiles();
   let filePath = req.path;
 
-  // 规范化路径
   if (filePath === '/') filePath = '/index.html';
-  // 去掉前导 /
   const fileName = filePath.slice(1);
 
   if (files[fileName]) {
@@ -55,7 +68,7 @@ app.use('/preview', (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.send(files[fileName]);
   } else {
-    next();
+    res.status(404).send('File not found');
   }
 });
 

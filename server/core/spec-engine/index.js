@@ -122,7 +122,7 @@ class SpecEngine {
     }
 
     try {
-      const response = await this.llm.chat(messages, {
+      const response = await this.llm.chatStreamingFull(messages, {
         temperature: 0.6,
         maxTokens: 4096,
       });

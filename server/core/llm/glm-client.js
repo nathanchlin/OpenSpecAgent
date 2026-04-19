@@ -50,6 +50,95 @@ class GLMClient {
   }
 
   /**
+   * 流式对话，但返回完整响应对象（兼容 chat() 的返回格式）
+   * 解决 GLM API 服务端 30s 非流式超时问题
+   */
+  async chatStreamingFull(messages, options = {}) {
+    const body = {
+      model: options.model || this.model,
+      messages,
+      max_tokens: options.maxTokens || this.maxTokens,
+      temperature: options.temperature ?? this.temperature,
+      stream: true,
+    };
+
+    return new Promise((resolve, reject) => {
+      const url = new URL(this.baseUrl + '/chat/completions');
+      const isHttps = url.protocol === 'https:';
+      const lib = isHttps ? https : http;
+
+      const payload = JSON.stringify(body);
+      let fullContent = '';
+      let finishReason = null;
+      let usage = null;
+
+      const req = lib.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`,
+            'Content-Length': Buffer.byteLength(payload),
+          },
+        },
+        (res) => {
+          let buffer = '';
+          let fullReasoning = '';
+
+          res.on('data', (chunk) => {
+            buffer += chunk.toString();
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+
+              const data = trimmed.slice(5).trim();
+              if (data === '[DONE]') {
+                resolve({
+                  choices: [{ message: { content: fullContent, reasoning_content: fullReasoning || undefined }, finish_reason: finishReason || 'stop' }],
+                  usage: usage,
+                });
+                return;
+              }
+
+              try {
+                const json = JSON.parse(data);
+                const delta = json.choices?.[0]?.delta?.content || '';
+                if (delta) fullContent += delta;
+                const reasoning = json.choices?.[0]?.delta?.reasoning_content || '';
+                if (reasoning) fullReasoning += reasoning;
+                if (json.choices?.[0]?.finish_reason) finishReason = json.choices[0].finish_reason;
+                if (json.usage) usage = json.usage;
+              } catch (e) {
+                // 忽略解析错误
+              }
+            }
+          });
+
+          res.on('end', () => {
+            resolve({
+              choices: [{ message: { content: fullContent, reasoning_content: fullReasoning || undefined }, finish_reason: finishReason || 'stop' }],
+              usage: usage,
+            });
+          });
+        }
+      );
+
+      req.on('error', reject);
+      req.setTimeout(300000, () => {
+        req.destroy(new Error('Request timeout after 300s'));
+      });
+      req.write(payload);
+      req.end();
+    });
+  }
+
+  /**
    * 发送 HTTP 请求
    */
   request(endpoint, body) {
@@ -92,6 +181,9 @@ class GLMClient {
       );
 
       req.on('error', reject);
+      req.setTimeout(300000, () => {
+        req.destroy(new Error('Request timeout after 300s'));
+      });
       req.write(payload);
       req.end();
     });
