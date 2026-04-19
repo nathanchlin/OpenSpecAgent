@@ -100,9 +100,11 @@ class SpecEngine {
 
   /**
    * 处理用户消息
+   * @param {Array} conversationHistory - 对话历史（调用方应先将用户消息 push 进来）
+   * @param {object|null} currentSpec - 当前 Spec
    * @returns {{ type: string, reply: string, spec?: object }}
    */
-  async processMessage(userMessage, conversationHistory, currentSpec) {
+  async processMessage(conversationHistory, currentSpec) {
     const messages = [
       { role: 'system', content: SPEC_SYSTEM_PROMPT },
     ];
@@ -113,11 +115,13 @@ class SpecEngine {
       messages.push({ role: msg.role, content: msg.content });
     }
 
-    // 如果有当前 Spec，注入上下文
+    // 如果有当前 Spec，注入上下文（截断过大的 spec 以控制 token 消耗）
     if (currentSpec) {
+      const specJson = JSON.stringify(currentSpec, null, 2);
+      const truncated = specJson.length > 4000 ? specJson.substring(0, 4000) + '\n...[Spec 已截断]' : specJson;
       messages.push({
         role: 'system',
-        content: `当前已确认的 Spec：\n${JSON.stringify(currentSpec, null, 2)}\n\n用户可能要在此基础上修改。`,
+        content: `当前已确认的 Spec：\n${truncated}\n\n用户可能要在此基础上修改。`,
       });
     }
 

@@ -6,6 +6,8 @@
  * - 基于用户修改指令的增量更新
  */
 
+const { debug } = require('../logger');
+
 const CODE_GEN_SYSTEM_PROMPT = `你是 OpenSpecAgent 的代码生成专家。你根据应用规格说明（Spec）生成完整的 Web 应用代码。
 
 ## 严格规则
@@ -122,24 +124,24 @@ class CodeGenerator {
         });
       }
 
-      const response = await this.llm.chat(messages, {
+      const response = await this.llm.chatStreamingFull(messages, {
         temperature: 0.5,
         maxTokens: 8192,
       });
 
       const msg = response.choices?.[0]?.message || {};
       const content = (msg.content || '') + '\n' + (msg.reasoning_content || '');
-      console.log(`[CodeGenerator] attempt ${attempt + 1}, content length: ${content.length}, has FILE marker: ${content.includes(':::FILE:')}`);
+      debug(`[CodeGenerator] attempt ${attempt + 1}, content length: ${content.length}, has FILE marker: ${content.includes(':::FILE:')}`);
 
       const files = this.parseFiles(content);
       if (Object.keys(files).length > 0) {
         if (attempt > 0) {
-          console.log(`[CodeGenerator] succeeded on attempt ${attempt + 1}`);
+          debug(`[CodeGenerator] succeeded on attempt ${attempt + 1}`);
         }
         return files;
       }
 
-      console.log(`[CodeGenerator] attempt ${attempt + 1} produced 0 files, ${attempt < maxRetries ? 'retrying...' : 'giving up.'}`);
+      debug(`[CodeGenerator] attempt ${attempt + 1} produced 0 files, ${attempt < maxRetries ? 'retrying...' : 'giving up.'}`);
     }
 
     return {};
@@ -149,10 +151,14 @@ class CodeGenerator {
    * 增量修改已生成的代码
    */
   async modify(userMessage, spec, currentFiles, conversationHistory) {
-    // 构造当前代码上下文
+    // 构造当前代码上下文（截断过长的文件以控制 token 消耗）
+    const MAX_FILE_CHARS = 6000;
     let codeContext = '当前已生成的文件：\n\n';
     for (const [fileName, fileContent] of Object.entries(currentFiles)) {
-      codeContext += `--- ${fileName} ---\n${fileContent}\n\n`;
+      const truncated = fileContent.length > MAX_FILE_CHARS
+        ? fileContent.substring(0, MAX_FILE_CHARS) + '\n...[已截断]'
+        : fileContent;
+      codeContext += `--- ${fileName} ---\n${truncated}\n\n`;
     }
 
     const messages = [
@@ -163,7 +169,7 @@ class CodeGenerator {
       },
     ];
 
-    const response = await this.llm.chat(messages, {
+    const response = await this.llm.chatStreamingFull(messages, {
       temperature: 0.4,
       maxTokens: 8192,
     });
@@ -194,7 +200,7 @@ class CodeGenerator {
     const markerIdx = content.indexOf(':::FILE:');
     if (markerIdx >= 0) {
       const sample = content.substring(markerIdx, markerIdx + 120);
-      console.log('[CodeGenerator] FILE marker sample:', JSON.stringify(sample));
+      debug('[CodeGenerator] FILE marker sample:', JSON.stringify(sample));
     }
 
     // 策略 1：标准 :::FILE:filename\n 内容 :::END 格式
@@ -220,7 +226,7 @@ class CodeGenerator {
 
     // 策略 2.5：:::FILE: 存在但无 :::END（LLM 输出被截断）
     if (Object.keys(files).length === 0 && content.includes(':::FILE:')) {
-      console.log('[CodeGenerator] :::FILE: found but no :::END, trying no-end strategy...');
+      debug('[CodeGenerator] :::FILE: found but no :::END, trying no-end strategy...');
       // 匹配 :::FILE:name\n 到下一个 :::FILE: 或内容末尾
       const noEndRegex = /:::FILE:\s*(\S+)\s*\r?\n([\s\S]*?)(?=:::FILE:|$)/g;
       while ((match = noEndRegex.exec(content)) !== null) {
@@ -234,14 +240,14 @@ class CodeGenerator {
 
     // 策略 3：Fallback — 检测独立的 HTML 文档块
     if (Object.keys(files).length === 0) {
-      console.log('[CodeGenerator] no :::FILE: markers found, trying fallback HTML detection...');
+      debug('[CodeGenerator] no :::FILE: markers found, trying fallback HTML detection...');
       const htmlBlocks = this.extractFallbackHTML(content);
       for (const [name, code] of Object.entries(htmlBlocks)) {
         files[name] = code;
       }
     }
 
-    console.log('[CodeGenerator] parsed files:', Object.keys(files));
+    debug('[CodeGenerator] parsed files:', Object.keys(files));
     return files;
   }
 

@@ -4,8 +4,9 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const { createRoutes } = require('./routes');
+const { createRoutes, createPreviewRoutes } = require('./routes');
 const { SessionStore } = require('./session');
+const { debug, error: logError, info } = require('./core/logger');
 
 // ── 加载 .env ──
 const envPath = path.join(__dirname, '..', '.env');
@@ -14,9 +15,16 @@ if (fs.existsSync(envPath)) {
   for (const line of envContent.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
-    const [key, ...valueParts] = trimmed.split('=');
-    if (key && valueParts.length > 0) {
-      process.env[key.trim()] = valueParts.join('=').trim();
+    const eqIndex = trimmed.indexOf('=');
+    if (eqIndex === -1) continue;
+    const key = trimmed.slice(0, eqIndex).trim();
+    let value = trimmed.slice(eqIndex + 1).trim();
+    // 去除引号包裹
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (key) {
+      process.env[key] = value;
     }
   }
 }
@@ -24,13 +32,30 @@ if (fs.existsSync(envPath)) {
 const app = express();
 app.use(express.json());
 
+// ── 请求日志 ──
+app.use((req, res, next) => {
+  // 安全头
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+
+  const start = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    if (req.path.startsWith('/api/')) {
+      debug(`[${res.statusCode}] ${req.method} ${req.path} ${ms}ms`);
+    }
+  });
+  next();
+});
+
 // ── 初始化会话仓库 ──
 const store = new SessionStore();
 store.loadAll();
 
 // 退出时保存
 process.on('SIGINT', () => {
-  console.log('\nShutting down...');
+  info('\nShutting down...');
   store.saveAll();
   process.exit(0);
 });
@@ -42,55 +67,37 @@ process.on('SIGTERM', () => {
 // ── API 路由 ──
 app.use('/api', createRoutes(store));
 
-// ── 预览路由（从内存提供生成的文件，按会话隔离）──
-app.use('/preview/:sessionId', (req, res, next) => {
-  const session = store.get(req.params.sessionId);
-  if (!session) return res.status(404).send('Session not found');
-
-  const files = session.getGeneratedFiles();
-  let filePath = req.path;
-
-  if (filePath === '/') filePath = '/index.html';
-  const fileName = filePath.slice(1);
-
-  if (files[fileName]) {
-    const ext = path.extname(fileName);
-    const contentTypes = {
-      '.html': 'text/html; charset=utf-8',
-      '.css': 'text/css; charset=utf-8',
-      '.js': 'application/javascript; charset=utf-8',
-      '.json': 'application/json; charset=utf-8',
-      '.png': 'image/png',
-      '.jpg': 'image/jpeg',
-      '.svg': 'image/svg+xml',
-    };
-    res.setHeader('Content-Type', contentTypes[ext] || 'application/octet-stream');
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.send(files[fileName]);
-  } else {
-    res.status(404).send('File not found');
-  }
-});
+// ── 预览路由 ──
+app.use('/preview', createPreviewRoutes(store));
 
 // ── 静态文件（前端）──
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// SPA fallback
+// SPA fallback（仅对非 API/preview 路径）
 app.get('*', (req, res) => {
+  if (req.path.startsWith('/api/') || req.path.startsWith('/preview/')) {
+    return res.status(404).json({ error: 'Not found' });
+  }
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+});
+
+// ── Express 错误处理中间件 ──
+app.use((err, req, res, next) => {
+  logError(`[Express Error] ${req.method} ${req.path}:`, err.message);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 // ── 全局错误处理 ──
 process.on('uncaughtException', (err) => {
-  console.error('[Uncaught Exception]', err.message, err.stack);
+  logError('[Uncaught Exception]', err.message, err.stack);
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[Unhandled Rejection]', reason);
+  logError('[Unhandled Rejection]', reason);
 });
 
 // ── 启动服务 ──
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`OpenSpecAgent running at http://localhost:${PORT}`);
+  info(`OpenSpecAgent running at http://localhost:${PORT}`);
 });

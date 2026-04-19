@@ -37,10 +37,6 @@ let activeSpecCard = null;
 //  会话管理
 // ═══════════════════════════════════════
 
-function apiUrl(path) {
-  return `/api/sessions/${activeSessionId}${path}`;
-}
-
 function previewPath() {
   return `/preview/${activeSessionId}/index.html`;
 }
@@ -117,26 +113,30 @@ async function createSession(name) {
 
 async function deleteSession(id) {
   const item = document.querySelector(`.session-item[data-id="${id}"]`);
-  const name = item ? item.querySelector('.session-item-name').firstChild.textContent : '此会话';
+  const name = item ? (item.querySelector('.session-item-name').firstChild?.textContent || '此会话') : '此会话';
   if (!confirm(`确认删除「${name}」？所有对话和文件将被清除。`)) return;
 
-  await apiFetch(`/api/sessions/${id}`, { method: 'DELETE' });
+  try {
+    await apiFetch(`/api/sessions/${id}`, { method: 'DELETE' });
 
-  if (id === activeSessionId) {
-    activeSessionId = null;
-    localStorage.removeItem('activeSessionId');
-    currentSpec = null;
-    activeSpecCard = null;
-    messagesEl.innerHTML = '';
-    previewFrame.src = 'about:blank';
-    chatHeaderEl.textContent = 'OpenSpecAgent';
-  }
+    if (id === activeSessionId) {
+      activeSessionId = null;
+      localStorage.removeItem('activeSessionId');
+      currentSpec = null;
+      activeSpecCard = null;
+      messagesEl.innerHTML = '';
+      previewFrame.src = 'about:blank';
+      chatHeaderEl.textContent = 'OpenSpecAgent';
+    }
 
-  await loadSessions();
+    await loadSessions();
 
-  // 如果删完了，创建新的
-  if (!activeSessionId) {
-    await createSession();
+    // 如果删完了，创建新的
+    if (!activeSessionId) {
+      await createSession();
+    }
+  } catch (err) {
+    alert('删除失败: ' + err.message);
   }
 }
 
@@ -144,8 +144,17 @@ async function renameSession(id, currentName) {
   const newName = prompt('重命名会话:', currentName);
   if (!newName || newName === currentName) return;
 
-  await apiPost(`/api/sessions/${id}/rename`, { name: newName });
-  await loadSessions();
+  try {
+    await apiPost(`/api/sessions/${id}/rename`, { name: newName });
+    await loadSessions();
+
+    // 如果重命名的是当前会话，更新 chatHeader
+    if (id === activeSessionId) {
+      chatHeaderEl.textContent = newName;
+    }
+  } catch (err) {
+    alert('重命名失败: ' + err.message);
+  }
 }
 
 async function switchSession(id) {
@@ -165,24 +174,25 @@ async function switchSession(id) {
   // 加载对话历史
   try {
     const history = await apiFetch(`/api/sessions/${id}/history`);
-    renderHistory(history);
+    if (activeSessionId === id) renderHistory(history);
   } catch (e) {
-    messagesEl.innerHTML = '';
+    if (activeSessionId === id) messagesEl.innerHTML = '';
   }
 
   // 加载 spec
   try {
     const spec = await apiFetch(`/api/sessions/${id}/spec`);
-    currentSpec = spec;
+    if (activeSessionId === id) currentSpec = spec;
   } catch (e) {
-    currentSpec = null;
+    if (activeSessionId === id) currentSpec = null;
   }
 
   // 更新 header 和预览
+  if (activeSessionId !== id) return;
   const item = document.querySelector(`.session-item[data-id="${id}"]`);
   const nameEl = item ? item.querySelector('.session-item-name') : null;
   // 读取纯名称（排除状态图标的 text）
-  chatHeaderEl.textContent = nameEl ? nameEl.firstChild.textContent : 'OpenSpecAgent';
+  chatHeaderEl.textContent = nameEl?.firstChild?.textContent || 'OpenSpecAgent';
 
   if (item && item.dataset.hasFiles === '1') {
     loadPreview();
@@ -287,7 +297,7 @@ function setupResize(handleId, panelId, direction) {
     const diff = e.clientX - startX;
     const w = direction === 'left'
       ? Math.max(280, Math.min(600, startWidth + diff))
-      : Math.max(180, Math.min(300, startWidth - diff));
+      : Math.max(180, Math.min(300, startWidth + diff));
     panel.style.width = w + 'px';
   }
 
@@ -333,10 +343,13 @@ async function sendMessage() {
   try {
     const result = await apiPost(`/api/sessions/${sessionId}/chat`, { message: text });
 
-    // 如果用户已切换到其他会话，不渲染响应
-    if (activeSessionId !== sessionId) return;
-
     loadingEl.remove();
+
+    // 如果用户已切换到其他会话，不渲染响应
+    if (activeSessionId !== sessionId) {
+      sendBtn.disabled = false;
+      return;
+    }
 
     if (result.type === 'error') {
       addMessage('error', result.reply);
@@ -348,7 +361,9 @@ async function sendMessage() {
     }
   } catch (err) {
     loadingEl.remove();
-    addMessage('error', '连接失败: ' + err.message);
+    if (activeSessionId === sessionId) {
+      addMessage('error', '连接失败: ' + err.message);
+    }
   }
 
   sendBtn.disabled = false;
@@ -399,25 +414,6 @@ function addSpecCard(reply, spec) {
   });
 }
 
-function renderSpecPreview(spec) {
-  if (!spec || !spec.pages) return '<div class="spec-card-item">(空)</div>';
-  let html = '';
-  for (const page of spec.pages) {
-    html += '<div class="spec-card-item">&#128196; ' + (page.title || page.name) + ' (' + page.file + ')</div>';
-    if (page.elements) {
-      for (const el of page.elements) {
-        html += '<div class="spec-card-item">&nbsp;&nbsp;\u251C\u2500 ' + el.type + ': ' + (el.label || el.id || el.text || '') + '</div>';
-      }
-    }
-    if (page.behaviors) {
-      for (const b of page.behaviors) {
-        html += '<div class="spec-card-item">&nbsp;&nbsp;\u251C\u2500 \u884C\u4E3A: ' + b.trigger + ' \u2192 ' + b.type + '</div>';
-      }
-    }
-  }
-  return html;
-}
-
 // ═══════════════════════════════════════
 //  确认 Spec → 头脑风暴
 // ═══════════════════════════════════════
@@ -429,32 +425,32 @@ async function confirmSpec() {
   if (!specCard) return;
   activeSpecCard = specCard;
 
+  const sessionId = activeSessionId;
+  const spec = currentSpec;
+
   const actions = specCard.querySelector('.spec-card-actions');
   if (actions) actions.style.display = 'none';
 
   injectStepper(specCard);
 
   const brainstormStep = specCard.querySelector('.gen-step[data-step="brainstorm"]');
+  if (!brainstormStep) return;
   brainstormStep.className = 'gen-step running';
   brainstormStep.querySelector('.gen-step-status').textContent = '分析中...';
 
   try {
-    const result = await apiPost(apiUrl('/brainstorm/start'), { spec: currentSpec });
+    const result = await apiPost(`/api/sessions/${sessionId}/brainstorm/start`, { spec });
     brainstormStep.className = 'gen-step completed';
     brainstormStep.querySelector('.gen-step-status').textContent = '问答中';
 
-    const detailEl = brainstormStep.querySelector('.gen-step-detail');
-    detailEl.innerHTML = formatContent(result.reply);
-    detailEl.classList.add('visible');
-
-    injectBrainstormChat(specCard, result.infoSufficient);
+    injectBrainstormChat(specCard, result.reply, result.infoSufficient);
   } catch (err) {
     brainstormStep.className = 'gen-step failed';
     brainstormStep.querySelector('.gen-step-status').textContent = '失败: ' + err.message;
   }
 }
 
-function injectBrainstormChat(specCard, infoSufficient) {
+function injectBrainstormChat(specCard, firstReply, infoSufficient) {
   const oldChat = specCard.querySelector('.brainstorm-chat');
   if (oldChat) oldChat.remove();
 
@@ -462,7 +458,7 @@ function injectBrainstormChat(specCard, infoSufficient) {
     <div class="brainstorm-chat">
       <div class="brainstorm-messages"></div>
       <div class="brainstorm-input-row">
-        <textarea class="brainstorm-input" placeholder="回答问题或补充想法..." rows="2"></textarea>
+        <textarea class="brainstorm-input" placeholder="补充说明（可选）..." rows="2"></textarea>
         <button class="spec-btn spec-btn-confirm brainstorm-send-btn">发送</button>
       </div>
       ${infoSufficient ? '' : '<button class="spec-btn spec-btn-confirm brainstorm-done-btn" style="margin-top:8px;width:100%;">信息已足够，开始生成</button>'}
@@ -474,6 +470,9 @@ function injectBrainstormChat(specCard, infoSufficient) {
   const textarea = chatArea.querySelector('.brainstorm-input');
   const brainstormSendBtn = chatArea.querySelector('.brainstorm-send-btn');
   const doneBtn = chatArea.querySelector('.brainstorm-done-btn');
+
+  // 渲染第一轮回复（带选项）
+  renderBrainstormReply(chatArea, firstReply);
 
   brainstormSendBtn.addEventListener('click', () => brainstormSend(chatArea, textarea));
   textarea.addEventListener('keydown', (e) => {
@@ -490,13 +489,89 @@ function injectBrainstormChat(specCard, infoSufficient) {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
+function renderBrainstormReply(chatArea, reply) {
+  const msgArea = chatArea.querySelector('.brainstorm-messages');
+  if (!msgArea) return;
+
+  const { questions, remaining } = parseBrainstormOptions(reply);
+
+  // 如果有非 Q/A 的说明文字，先显示
+  if (remaining) {
+    msgArea.insertAdjacentHTML('beforeend',
+      `<div class="brainstorm-msg brainstorm-msg-assistant">${formatContent(remaining)}</div>`);
+  }
+
+  if (questions.length === 0) {
+    // 没有 ##Q/##A 结构，直接显示原文
+    if (!remaining) {
+      msgArea.insertAdjacentHTML('beforeend',
+        `<div class="brainstorm-msg brainstorm-msg-assistant">${formatContent(reply)}</div>`);
+    }
+    return;
+  }
+
+  // 渲染选项按钮组
+  let optionsHTML = '<div class="brainstorm-options">';
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    optionsHTML += `<div class="brainstorm-option-group" data-q="${i}">`;
+    optionsHTML += `<div class="brainstorm-option-group-title">${formatContent(q.title)}</div>`;
+    for (const opt of q.options) {
+      optionsHTML += `<button class="brainstorm-option-btn" data-q="${i}">${formatContent(opt)}</button>`;
+    }
+    optionsHTML += '</div>';
+  }
+  optionsHTML += '</div>';
+  msgArea.insertAdjacentHTML('beforeend', optionsHTML);
+
+  // 绑定选项点击事件（同一问题组内单选）
+  const optionBtns = msgArea.querySelectorAll('.brainstorm-option-btn');
+  for (const btn of optionBtns) {
+    btn.addEventListener('click', () => {
+      const qIdx = btn.getAttribute('data-q');
+      // 同组内取消其他选中
+      const siblings = msgArea.querySelectorAll(`.brainstorm-option-btn[data-q="${qIdx}"]`);
+      for (const s of siblings) s.classList.remove('selected');
+      btn.classList.add('selected');
+    });
+  }
+}
+
+/**
+ * 收集当前选中的选项文本
+ */
+function collectSelectedOptions(chatArea) {
+  const msgArea = chatArea.querySelector('.brainstorm-messages');
+  if (!msgArea) return [];
+
+  const groups = msgArea.querySelectorAll('.brainstorm-option-group');
+  const answers = [];
+  for (const group of groups) {
+    const qTitle = group.querySelector('.brainstorm-option-group-title');
+    const selected = group.querySelector('.brainstorm-option-btn.selected');
+    if (selected) {
+      const qText = qTitle ? qTitle.textContent : '';
+      answers.push(`${qText} → ${selected.textContent}`);
+    }
+  }
+  return answers;
+}
+
 async function brainstormSend(chatArea, textarea) {
-  const text = textarea.value.trim();
+  // 收集选项 + 自定义文本
+  const optionAnswers = collectSelectedOptions(chatArea);
+  const customText = textarea.value.trim();
+  const text = [...optionAnswers, customText].filter(Boolean).join('\n');
   if (!text || !activeSessionId) return;
 
-  textarea.value = '';
+  const sessionId = activeSessionId;
 
+  textarea.value = '';
+  // 清除已选中的选项按钮
   const msgArea = chatArea.querySelector('.brainstorm-messages');
+  const selectedBtns = msgArea.querySelectorAll('.brainstorm-option-btn.selected');
+  for (const btn of selectedBtns) btn.classList.remove('selected');
+
   msgArea.insertAdjacentHTML('beforeend', `<div class="brainstorm-msg brainstorm-msg-user">${formatContent(text)}</div>`);
   msgArea.insertAdjacentHTML('beforeend', '<div class="brainstorm-msg brainstorm-msg-loading"><span></span><span></span><span></span></div>');
   messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -505,16 +580,18 @@ async function brainstormSend(chatArea, textarea) {
   chatArea.querySelector('.brainstorm-send-btn').disabled = true;
 
   try {
-    const result = await apiPost(apiUrl('/brainstorm/chat'), { message: text });
+    const result = await apiPost(`/api/sessions/${sessionId}/brainstorm/chat`, { message: text });
 
     const loading = msgArea.querySelector('.brainstorm-msg-loading');
     if (loading) loading.remove();
 
-    msgArea.insertAdjacentHTML('beforeend', `<div class="brainstorm-msg brainstorm-msg-assistant">${formatContent(result.reply)}</div>`);
+    renderBrainstormReply(chatArea, result.reply);
 
     if (result.infoSufficient && !chatArea.querySelector('.brainstorm-done-btn')) {
       chatArea.insertAdjacentHTML('beforeend', '<button class="spec-btn spec-btn-confirm brainstorm-done-btn" style="margin-top:8px;width:100%;">信息已足够，开始生成</button>');
-      chatArea.querySelector('.brainstorm-done-btn').addEventListener('click', () => startGeneration(activeSpecCard));
+      const doneBtn = chatArea.querySelector('.brainstorm-done-btn');
+      const parentSpecCard = chatArea.closest('.spec-card');
+      doneBtn.addEventListener('click', () => startGeneration(parentSpecCard));
     }
   } catch (err) {
     const loading = msgArea.querySelector('.brainstorm-msg-loading');
@@ -553,17 +630,48 @@ async function startGeneration(specCard) {
   const cancelBtn = specCard.querySelector('.gen-cancel-btn');
   cancelBtn.addEventListener('click', cancelGen);
 
-  // 建立 SSE 连接
-  const sseUrl = apiUrl('/generate/stream');
+  // 记录当前会话 ID，用于 SSE 回调中的身份检查
+  const generationSessionId = activeSessionId;
+
+  // 先建立 SSE 连接，再触发生成 POST（避免竞态：pipeline 完成/done 在 SSE 注册之前）
+  const sseUrl = `/api/sessions/${generationSessionId}/generate/stream`;
   const eventSource = new EventSource(sseUrl);
 
+  // 安全超时：10 分钟内未收到 done 事件则恢复 UI（防止永久锁定）
+  // 多文件生成（计划+每文件执行+审核）可能需要较长时间
+  const safetyTimeout = setTimeout(() => {
+    eventSource.close();
+    showError(specCard, '生成超时，请重试。');
+    sendBtn.disabled = false;
+    inputEl.disabled = false;
+  }, 10 * 60 * 1000);
+
   eventSource.addEventListener('progress', (e) => {
-    const event = JSON.parse(e.data);
-    updateStepper(specCard, event);
+    if (activeSessionId !== generationSessionId) return;
+    try {
+      const event = JSON.parse(e.data);
+      updateStepper(specCard, event);
+    } catch (err) {
+      console.error('[SSE] Failed to parse progress event:', err);
+    }
   });
 
   eventSource.addEventListener('done', (e) => {
-    const result = JSON.parse(e.data);
+    clearTimeout(safetyTimeout);
+    if (activeSessionId !== generationSessionId) {
+      eventSource.close();
+      return;
+    }
+    let result;
+    try {
+      result = JSON.parse(e.data);
+    } catch (err) {
+      console.error('[SSE] Failed to parse done event:', err);
+      showError(specCard, '收到无效的完成信号');
+      sendBtn.disabled = false;
+      inputEl.disabled = false;
+      return;
+    }
     eventSource.close();
 
     if (result.type === 'success') {
@@ -578,28 +686,36 @@ async function startGeneration(specCard) {
     inputEl.focus();
   });
 
+  // SSE 错误处理：不立即放弃，允许浏览器自动重连
+  // EventSource 内置重连机制，只在安全超时时才真正放弃
   eventSource.onerror = () => {
-    eventSource.close();
-    sendBtn.disabled = false;
-    inputEl.disabled = false;
+    // EventSource 会自动重连，不要关闭
+    // 如果 pipeline 已完成，重连后服务端会通过 _lastDoneEvent 重放 done 事件
+    // 安全超时是最终的兜底
   };
 
-  // 触发生成
-  try {
-    await apiPost(apiUrl('/generate'), {});
-  } catch (err) {
-    eventSource.close();
-    showError(specCard, err.message);
-    sendBtn.disabled = false;
-    inputEl.disabled = false;
-  }
+  // SSE 连接建立后触发 POST（给 SSE 一小段时间完成握手）
+  setTimeout(async () => {
+    try {
+      await apiPost(`/api/sessions/${generationSessionId}/generate`, {});
+    } catch (err) {
+      clearTimeout(safetyTimeout);
+      eventSource.close();
+      showError(specCard, err.message);
+      sendBtn.disabled = false;
+      inputEl.disabled = false;
+    }
+  }, 100);
 }
 
 async function cancelGen() {
   if (!activeSessionId) return;
+  const sessionId = activeSessionId;
   try {
-    await apiPost(apiUrl('/generate/cancel'));
-  } catch (e) {}
+    await apiPost(`/api/sessions/${sessionId}/generate/cancel`);
+  } catch (e) {
+    console.warn('取消生成失败:', e.message);
+  }
 }
 
 // ── 步进器 ──
@@ -647,12 +763,18 @@ function updateStepper(specCard, event) {
   const statusEl = stepEl.querySelector('.gen-step-status');
   statusEl.textContent = STEP_STATUS_TEXT[event.status] || event.status;
 
-  if (event.output && event.status === 'completed') {
+  if (event.output && typeof event.output === 'string' && event.status === 'completed') {
     const detailEl = stepEl.querySelector('.gen-step-detail');
-    detailEl.textContent = event.output.substring(0, 500) + (event.output.length > 500 ? '...' : '');
-    stepEl.querySelector('.gen-step-title').addEventListener('click', () => {
-      detailEl.classList.toggle('visible');
-    });
+    if (detailEl) {
+      detailEl.textContent = event.output.substring(0, 500) + (event.output.length > 500 ? '...' : '');
+      const titleEl = stepEl.querySelector('.gen-step-title');
+      if (titleEl && !titleEl.dataset.toggleBound) {
+        titleEl.dataset.toggleBound = '1';
+        titleEl.addEventListener('click', () => {
+          detailEl.classList.toggle('visible');
+        });
+      }
+    }
   }
 
   if (event.error && event.status === 'failed') {
@@ -668,10 +790,14 @@ function showCompletion(specCard, files, review) {
 
   let summaryHTML = `<div class="gen-summary">生成完成！共 ${files.length} 个文件。`;
   if (review) {
-    summaryHTML += '<br>' + formatContent(review).substring(0, 300);
+    const truncatedReview = review.length > 300 ? review.substring(0, 300) + '...' : review;
+    summaryHTML += '<br>' + formatContent(truncatedReview);
   }
   summaryHTML += '</div>';
   specCard.insertAdjacentHTML('beforeend', summaryHTML);
+
+  // 刷新会话列表以更新状态图标和 data-hasFiles（影响导出按钮）
+  loadSessions();
 }
 
 function showError(specCard, message) {
@@ -684,32 +810,13 @@ function showError(specCard, message) {
 }
 
 // ═══════════════════════════════════════
-//  Helpers
+//  Global Error Handling
 // ═══════════════════════════════════════
 
-function formatContent(text) {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, '<br>')
-    .replace(/`([^`]+)`/g, '<code style="background:#11111b;padding:1px 4px;border-radius:3px;font-size:12px;">$1</code>');
-}
-
-function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function formatTime(ts) {
-  if (!ts) return '';
-  const d = new Date(ts);
-  const now = new Date();
-  const isToday = d.toDateString() === now.toDateString();
-  if (isToday) {
-    return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
-  }
-  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
-}
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('[Unhandled Promise]', e.reason);
+  e.preventDefault();
+});
 
 // ═══════════════════════════════════════
 //  Init

@@ -3,9 +3,24 @@
 
 const express = require('express');
 const archiver = require('archiver');
+const { error: logError } = require('./core/logger');
+
+const MAX_HISTORY_LENGTH = 100;
+const MAX_BRAINSTORM_LENGTH = 50;
 
 function createRoutes(store) {
   const router = express.Router();
+
+  // ── 健康检查 ──
+  router.get('/health', (req, res) => {
+    const sessions = store.list();
+    res.json({
+      status: 'ok',
+      sessions: sessions.length,
+      uptime: process.uptime(),
+      memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
+    });
+  });
 
   // ── 辅助：获取会话 ──
   function getSession(req, res) {
@@ -29,6 +44,12 @@ function createRoutes(store) {
   // 创建新会话
   router.post('/sessions', (req, res) => {
     const { name } = req.body || {};
+    if (name && typeof name !== 'string') {
+      return res.status(400).json({ error: 'name must be a string' });
+    }
+    if (name && name.length > 100) {
+      return res.status(400).json({ error: 'name too long (max 100 chars)' });
+    }
     const { id, session } = store.create(name);
     res.json({ id, name: session.name, createdAt: session.createdAt });
   });
@@ -43,6 +64,8 @@ function createRoutes(store) {
   router.post('/sessions/:id/rename', (req, res) => {
     const { name } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
+    if (typeof name !== 'string') return res.status(400).json({ error: 'name must be a string' });
+    if (name.length > 100) return res.status(400).json({ error: 'name too long (max 100 chars)' });
     const ok = store.rename(req.params.id, name);
     res.json({ ok });
   });
@@ -57,13 +80,14 @@ function createRoutes(store) {
 
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: 'message is required' });
+    if (typeof message !== 'string') return res.status(400).json({ error: 'message must be a string' });
+    if (message.length > 10000) return res.status(400).json({ error: 'message too long (max 10000 chars)' });
 
-    session.conversationHistory.push({ role: 'user', content: message });
+    session.conversationHistory.push({ role: 'user', content: message.slice(0, 10000) });
     session.touch();
 
     try {
       const specResult = await session.specEngine.processMessage(
-        message,
         session.conversationHistory,
         session.spec
       );
@@ -76,6 +100,10 @@ function createRoutes(store) {
         role: 'assistant',
         content: specResult.reply,
       });
+
+      if (session.conversationHistory.length > MAX_HISTORY_LENGTH) {
+        session.conversationHistory = session.conversationHistory.slice(-MAX_HISTORY_LENGTH);
+      }
 
       store.save(session.id);
       res.json({
@@ -96,8 +124,14 @@ function createRoutes(store) {
 
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: 'message is required' });
+    if (typeof message !== 'string') return res.status(400).json({ error: 'message must be a string' });
+    if (message.length > 10000) return res.status(400).json({ error: 'message too long (max 10000 chars)' });
 
-    session.conversationHistory.push({ role: 'user', content: message });
+    if (Object.keys(session.generatedFiles).length === 0) {
+      return res.status(400).json({ error: 'No generated files to modify. Please generate code first.' });
+    }
+
+    session.conversationHistory.push({ role: 'user', content: message.slice(0, 10000) });
 
     try {
       const result = await session.codeGenerator.modify(
@@ -115,6 +149,10 @@ function createRoutes(store) {
         role: 'assistant',
         content: result.reply,
       });
+
+      if (session.conversationHistory.length > MAX_HISTORY_LENGTH) {
+        session.conversationHistory = session.conversationHistory.slice(-MAX_HISTORY_LENGTH);
+      }
 
       session.touch();
       store.save(session.id);
@@ -147,6 +185,9 @@ function createRoutes(store) {
     if (!session) return;
 
     const { spec } = req.body;
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+      return res.status(400).json({ error: 'spec must be a non-empty object' });
+    }
     session.spec = spec;
     session.brainstormHistory = [];
     const specJson = JSON.stringify(spec, null, 2);
@@ -162,6 +203,9 @@ function createRoutes(store) {
     try {
       const result = await pipeline.startBrainstorm(specJson);
       session.brainstormHistory.push({ role: 'assistant', content: result.reply });
+      if (session.brainstormHistory.length > MAX_BRAINSTORM_LENGTH) {
+        session.brainstormHistory = session.brainstormHistory.slice(-MAX_BRAINSTORM_LENGTH);
+      }
       session.touch();
       store.save(session.id);
       res.json({ reply: result.reply, infoSufficient: result.infoSufficient });
@@ -176,17 +220,22 @@ function createRoutes(store) {
 
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: 'message is required' });
+    if (typeof message !== 'string') return res.status(400).json({ error: 'message must be a string' });
+    if (message.length > 10000) return res.status(400).json({ error: 'message too long (max 10000 chars)' });
 
     if (!session.activePipeline) {
       return res.json({ reply: '管道未启动', infoSufficient: false });
     }
 
-    session.brainstormHistory.push({ role: 'user', content: message });
+    session.brainstormHistory.push({ role: 'user', content: message.slice(0, 10000) });
     const specJson = JSON.stringify(session.spec, null, 2);
 
     try {
       const result = await session.activePipeline.continueBrainstorm(specJson, session.brainstormHistory);
       session.brainstormHistory.push({ role: 'assistant', content: result.reply });
+      if (session.brainstormHistory.length > MAX_BRAINSTORM_LENGTH) {
+        session.brainstormHistory = session.brainstormHistory.slice(-MAX_BRAINSTORM_LENGTH);
+      }
       session.touch();
       store.save(session.id);
       res.json({ reply: result.reply, infoSufficient: result.infoSufficient });
@@ -209,7 +258,8 @@ function createRoutes(store) {
 
     const brainstormSummary = (session.brainstormHistory || [])
       .map(m => `${m.role === 'user' ? '用户' : '分析师'}: ${m.content}`)
-      .join('\n\n');
+      .join('\n\n')
+      .substring(0, 8000);
 
     if (!session.activePipeline) {
       const GenPipeline = require('./core/gen-pipeline');
@@ -221,6 +271,7 @@ function createRoutes(store) {
     }
 
     const sessionId = session.id;
+    session._lastDoneEvent = null;
 
     session.activePipeline.runGeneration(session.spec, brainstormSummary)
       .then((result) => {
@@ -286,6 +337,13 @@ function createRoutes(store) {
     const archive = archiver('zip', { zlib: { level: 9 } });
     archive.pipe(res);
 
+    archive.on('error', (err) => {
+      logError('[Export] Archive error:', err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to create archive' });
+      }
+    });
+
     for (const [fileName, content] of Object.entries(files)) {
       archive.append(content, { name: fileName });
     }
@@ -307,4 +365,49 @@ function createRoutes(store) {
   return router;
 }
 
-module.exports = { createRoutes };
+/**
+ * 创建预览路由（从内存提供生成的文件，按会话隔离）
+ */
+function createPreviewRoutes(store) {
+  const router = express.Router();
+  const path = require('path');
+
+  const contentTypes = {
+    '.html': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.svg': 'image/svg+xml',
+  };
+
+  router.use('/:sessionId', (req, res) => {
+    const session = store.get(req.params.sessionId);
+    if (!session) return res.status(404).send('Session not found');
+
+    const files = session.getGeneratedFiles();
+    let filePath = req.path;
+
+    if (filePath === '/') filePath = '/index.html';
+    const fileName = filePath.slice(1);
+
+    // 路径安全检查：拒绝路径遍历
+    if (fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
+      return res.status(400).send('Invalid file name');
+    }
+
+    if (files[fileName]) {
+      const ext = path.extname(fileName);
+      res.setHeader('Content-Type', contentTypes[ext] || 'application/octet-stream');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.send(files[fileName]);
+    } else {
+      res.status(404).send('File not found');
+    }
+  });
+
+  return router;
+}
+
+module.exports = { createRoutes, createPreviewRoutes };

@@ -5,17 +5,22 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node server/index.js"
+    "dev": "node server/index.js",
+    "test": "jest",
+    "test:coverage": "jest --coverage"
   },
   "dependencies": {
     "archiver": "^7.0.1",
-    "express": "^4.21.0",
-    "ws": "^8.18.0"
+    "express": "^4.21.0"
   },
   "keywords": [
     "openspec",
     "web-generator",
     "ai"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "jest": "^30.3.0",
+    "supertest": "^7.2.2"
+  }
 }

@@ -1,7 +1,7 @@
 node_modules/
 dist/
 generated/
-knowledge/*.db
+knowledge/
 *.log
 .DS_Store
 Thumbs.db
@@ -9,3 +9,13 @@ Thumbs.db
 .superpowers/
 data/
 .claude/
+coverage/
+tests/__snapshots__/
+*.tsbuildinfo
+.idea/
+.vscode/
+*.swp
+*.swo
+superpowers-marketplace/
+mempalace.yaml
+entities.json

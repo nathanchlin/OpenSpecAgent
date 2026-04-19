@@ -5,6 +5,8 @@
  * 阶段 2: 编写计划 → 分文件执行（每个 HTML 独立生成）→ 代码审核
  */
 
+const { debug, error: logError } = require('../logger');
+
 const {
   BRAINSTORM_PROMPT,
   PLAN_PROMPT,
@@ -19,7 +21,7 @@ const STEPS = [
   { key: 'review',     label: '代码审核' },
 ];
 
-const MAX_EXECUTE_RETRIES = 2;
+const MAX_EXECUTE_RETRIES = 1;
 
 /** 空壳代码检测模式 */
 const PLACEHOLDER_PATTERNS = [
@@ -47,6 +49,11 @@ const PER_FILE_CONTEXT_PROMPT = `
 `;
 
 class GenPipeline {
+  /**
+   * @param {object} llmClient - GLMClient 实例
+   * @param {object} codeGenerator - CodeGenerator 实例
+   * @param {function} onProgress - 进度回调 (event) => void
+   */
   constructor(llmClient, codeGenerator, onProgress) {
     this.llm = llmClient;
     this.codeGen = codeGenerator;
@@ -54,6 +61,7 @@ class GenPipeline {
     this.cancelled = false;
   }
 
+  /** 取消当前管道执行 */
   cancel() {
     this.cancelled = true;
   }
@@ -62,6 +70,11 @@ class GenPipeline {
   // 阶段 1: 交互式头脑风暴
   // ═══════════════════════════════════════
 
+  /**
+   * 启动头脑风暴
+   * @param {string} specJson - JSON 字符串化的 Spec
+   * @returns {Promise<{reply: string, infoSufficient: boolean}>}
+   */
   async startBrainstorm(specJson) {
     const messages = [
       { role: 'system', content: BRAINSTORM_PROMPT },
@@ -72,6 +85,12 @@ class GenPipeline {
     return { reply, infoSufficient: reply.includes('INFO_SUFFICIENT') };
   }
 
+  /**
+   * 继续头脑风暴对话
+   * @param {string} specJson - JSON 字符串化的 Spec
+   * @param {Array<{role: string, content: string}>} history - 头脑风暴历史
+   * @returns {Promise<{reply: string, infoSufficient: boolean}>}
+   */
   async continueBrainstorm(specJson, history) {
     const messages = [
       { role: 'system', content: BRAINSTORM_PROMPT + '\n\n## 应用 Spec\n' + specJson },
@@ -86,6 +105,12 @@ class GenPipeline {
   // 阶段 2: 自动生成（计划→分文件执行→审核）
   // ═══════════════════════════════════════
 
+  /**
+   * 运行完整生成管道（计划→执行→审核）
+   * @param {object} spec - 应用 Spec 对象
+   * @param {string} brainstormSummary - 头脑风暴讨论摘要
+   * @returns {Promise<{files: object, reviewSummary: string, steps: Array}>}
+   */
   async runGeneration(spec, brainstormSummary) {
     const specJson = JSON.stringify(spec, null, 2);
     const context = { files: {}, reviewSummary: '' };
@@ -99,7 +124,7 @@ class GenPipeline {
       }
 
       const step = STEPS[i];
-      console.log(`[GenPipeline] Step ${i + 1}/${STEPS.length}: ${step.label} starting...`);
+      debug(`[GenPipeline] Step ${i + 1}/${STEPS.length}: ${step.label} starting...`);
       this._emit(i, 'running', null, null);
 
       try {
@@ -138,10 +163,10 @@ class GenPipeline {
         if (step.key !== 'execute') {
           this._emit(i, 'completed', output, null);
         }
-        console.log(`[GenPipeline] Step ${step.label}: completed`);
+        debug(`[GenPipeline] Step ${step.label}: completed`);
         stepResults.push({ key: step.key, label: step.label, status: 'completed' });
       } catch (err) {
-        console.error(`[GenPipeline] Step ${step.key} failed:`, err.message);
+        logError(`[GenPipeline] Step ${step.key} failed:`, err.message);
         const isCritical = step.key === 'execute';
         this._emit(i, isCritical ? 'failed' : 'skipped', null, err.message);
         stepResults.push({ key: step.key, label: step.label, status: isCritical ? 'failed' : 'skipped' });
@@ -199,7 +224,7 @@ class GenPipeline {
       pages.push({ name: 'index', file: 'index.html', title: '首页' });
     }
 
-    console.log(`[GenPipeline] Extracted ${pages.length} pages: ${pages.map(p => p.file).join(', ')}`);
+    debug(`[GenPipeline] Extracted ${pages.length} pages: ${pages.map(p => p.file).join(', ')}`);
     return pages;
   }
 
@@ -292,35 +317,38 @@ class GenPipeline {
     const sharedStyles = this._extractSharedStyles(spec);
     const routeTable = this._extractRouteTable(spec, pageList);
     const totalPages = pageList.length;
+    let completedCount = 0;
 
-    for (let idx = 0; idx < totalPages; idx++) {
-      if (this.cancelled) {
-        this._emit(stepIndex, 'failed', null, '用户取消');
-        return allFiles;
-      }
+    this._emit(stepIndex, 'running', null, `正在生成 0/${totalPages}...`);
 
-      const page = pageList[idx];
-      const progressMsg = `正在生成第 ${idx + 1}/${totalPages} 个文件: ${page.file}`;
-      console.log(`[GenPipeline] ${progressMsg}`);
-      this._emit(stepIndex, 'running', null, progressMsg);
+    // 并行生成所有文件，每完成一个发进度
+    const tasks = pageList.map(async (page, idx) => {
+      if (this.cancelled) return null;
 
-      // 从已生成文件提取数据接口（对策：数据传递一致性）
+      const filePlan = this._extractFilePlan(planText, page.file);
       const dataInterface = this._extractDataInterface(allFiles);
 
-      // 提取当前文件的计划段落（对策：减少 token 消耗）
-      const filePlan = this._extractFilePlan(planText, page.file);
-
-      // 生成单个文件（带重试）
       const fileResult = await this._generateSingleFile(
         specJson, brainstormText, filePlan, page,
         sharedStyles, routeTable, dataInterface
       );
 
+      completedCount++;
+      this._emit(stepIndex, 'running', null, `正在生成 ${completedCount}/${totalPages}...`);
+
       if (fileResult) {
-        allFiles[page.file] = fileResult;
-        console.log(`[GenPipeline] Generated ${page.file}: ${fileResult.length} chars`);
+        debug(`[GenPipeline] Generated ${page.file}: ${fileResult.length} chars`);
       } else {
-        console.log(`[GenPipeline] Failed to generate ${page.file}, skipping`);
+        debug(`[GenPipeline] Failed to generate ${page.file}`);
+      }
+      return { file: page.file, content: fileResult };
+    });
+
+    const results = await Promise.all(tasks);
+
+    for (const r of results) {
+      if (r && r.content) {
+        allFiles[r.file] = r.content;
       }
     }
 
@@ -385,11 +413,11 @@ class GenPipeline {
       }
 
       try {
-        const content = await this._callLlmWithContinue(messages, { temperature: 0.3, maxTokens: 32768 }, 1);
+        const content = await this._callLlmWithContinue(messages, { temperature: 0.3, maxTokens: 16384 }, 1);
         const files = this.codeGen.parseFiles(content);
 
         if (Object.keys(files).length === 0) {
-          console.log(`[GenPipeline] ${page.file} attempt ${attempt + 1}: 0 files parsed`);
+          debug(`[GenPipeline] ${page.file} attempt ${attempt + 1}: 0 files parsed`);
           continue;
         }
 
@@ -403,102 +431,14 @@ class GenPipeline {
           return generatedContent;
         }
 
-        console.log(`[GenPipeline] ${page.file} attempt ${attempt + 1}: placeholder detected: ${issues.join('; ')}`);
+        debug(`[GenPipeline] ${page.file} attempt ${attempt + 1}: placeholder detected: ${issues.join('; ')}`);
       } catch (err) {
-        console.error(`[GenPipeline] ${page.file} attempt ${attempt + 1} error: ${err.message}`);
+        logError(`[GenPipeline] ${page.file} attempt ${attempt + 1} error: ${err.message}`);
       }
     }
 
     // 所有重试失败，返回 null
     return null;
-  }
-
-  // ── 执行（旧的一次性方法，保留作为 fallback，不再使用）──
-
-  async _executeWithRetry(specJson, brainstormText, planText, stepIndex) {
-    let lastFiles = null;
-    let lastIssues = [];
-
-    for (let attempt = 0; attempt <= MAX_EXECUTE_RETRIES; attempt++) {
-      if (this.cancelled) return null;
-
-      if (attempt === 0) {
-        this._emit(stepIndex, 'running', null, null);
-      } else {
-        this._emit(stepIndex, 'running', null, `第 ${attempt + 1} 次尝试（修复空壳代码）`);
-      }
-
-      const files = await this._runExecuteOnce(specJson, brainstormText, planText, lastIssues);
-
-      if (Object.keys(files).length === 0) {
-        console.log(`[GenPipeline] Execute attempt ${attempt + 1}: 0 files parsed`);
-        lastIssues = ['未能解析出任何文件。请确保使用 :::FILE:文件名 格式输出。'];
-        continue;
-      }
-
-      const issues = this._detectPlaceholders(files);
-      if (issues.length === 0) {
-        console.log(`[GenPipeline] Execute attempt ${attempt + 1}: quality OK, ${Object.keys(files).length} files`);
-        this._emit(stepIndex, 'completed', `${Object.keys(files).length} 个文件生成完成`, null);
-        return files;
-      }
-
-      console.log(`[GenPipeline] Execute attempt ${attempt + 1}: placeholder detected: ${issues.join('; ')}`);
-      lastFiles = files;
-      lastIssues = issues;
-    }
-
-    if (lastFiles && Object.keys(lastFiles).length > 0) {
-      console.log('[GenPipeline] All retries exhausted, returning last attempt');
-      this._emit(stepIndex, 'completed', `重试 ${MAX_EXECUTE_RETRIES} 次后返回`, null);
-      return lastFiles;
-    }
-
-    this._emit(stepIndex, 'failed', null, '多次重试后仍无法生成有效代码');
-    return null;
-  }
-
-  async _runExecuteOnce(specJson, brainstormText, planText, previousIssues = []) {
-    const messages = [
-      { role: 'system', content: EXECUTE_PROMPT },
-      {
-        role: 'user',
-        content: [
-          '## 应用 Spec',
-          specJson,
-          '',
-          '## 头脑风暴讨论',
-          brainstormText || '（跳过）',
-          '',
-          '## 实现计划',
-          planText || '（跳过）',
-        ].join('\n'),
-      },
-    ];
-
-    if (previousIssues.length > 0) {
-      messages.push({ role: 'assistant', content: '好的，我来生成完整的 Web 应用代码。' });
-      messages.push({
-        role: 'user',
-        content: [
-          '你上一次生成的代码存在以下问题：',
-          ...previousIssues.map((iss, idx) => `${idx + 1}. ${iss}`),
-          '',
-          '重要要求：',
-          '- 不要使用 "..." 或 "/* ... extensive ... */" 等占位注释',
-          '- 每一行 CSS、HTML、JavaScript 都必须完整写出',
-          '- 宁可减少功能，也不要用占位符省略代码',
-          '',
-          '请重新生成完整的代码。',
-        ].join('\n'),
-      });
-    } else {
-      messages[messages.length - 1].content += '\n\n请严格按实现计划生成完整的 Web 应用代码。不要使用占位注释，每一行代码都必须完整写出。';
-    }
-
-    const content = await this._callLlmWithContinue(messages, { temperature: 0.3, maxTokens: 131072 }, 2);
-    console.log(`[GenPipeline] Execute: final content length=${content.length}`);
-    return this.codeGen.parseFiles(content);
   }
 
   /**
@@ -517,11 +457,11 @@ class GenPipeline {
         fullContent += chunk;
 
         const finishReason = choice.finish_reason;
-        console.log(`[GenPipeline] LLM round ${round + 1}: chunk=${chunk.length} chars, finish_reason=${finishReason}, total=${fullContent.length}`);
+        debug(`[GenPipeline] LLM round ${round + 1}: chunk=${chunk.length} chars, finish_reason=${finishReason}, total=${fullContent.length}`);
 
         if (finishReason !== 'length') break;
 
-        console.log(`[GenPipeline] Output truncated (finish_reason=length), continuing...`);
+        debug(`[GenPipeline] Output truncated (finish_reason=length), continuing...`);
         const assistantText = choice.message?.content || '';
         const truncatedAssistant = assistantText.length > TRUNCATE_LEN
           ? '...[前文已输出 ' + assistantText.length + ' 字符]...\n' + assistantText.slice(-TRUNCATE_LEN)
@@ -534,13 +474,13 @@ class GenPipeline {
 
         if (this.cancelled) break;
       } catch (err) {
-        console.error(`[GenPipeline] LLM round ${round + 1} error: ${err.message}`);
+        logError(`[GenPipeline] LLM round ${round + 1} error: ${err.message}`);
         if (fullContent.length > 0) {
-          console.log(`[GenPipeline] Returning ${fullContent.length} chars already received`);
+          debug(`[GenPipeline] Returning ${fullContent.length} chars already received`);
           break;
         }
         if (round === 0) {
-          console.log(`[GenPipeline] Retrying first round...`);
+          debug(`[GenPipeline] Retrying first round...`);
           continue;
         }
         throw err;
@@ -565,17 +505,96 @@ class GenPipeline {
   }
 
   async _runReview(specJson, files) {
-    let codeContext = '';
-    for (const [name, content] of Object.entries(files)) {
-      codeContext += `\n\n--- ${name} ---\n${content}`;
+    const fileNames = Object.keys(files);
+    const allCorrected = {};
+    const summaries = [];
+
+    for (let idx = 0; idx < fileNames.length; idx++) {
+      const fileName = fileNames[idx];
+      const fileContent = files[fileName];
+
+      // 构建其他文件的接口摘要（而非完整源码）
+      const otherSummary = this._extractOtherFileSummary(fileName, files);
+
+      const messages = [
+        { role: 'system', content: REVIEW_PROMPT },
+        {
+          role: 'user',
+          content: [
+            '## 任务：逐文件审核',
+            '',
+            `当前审核文件：${fileName}（第 ${idx + 1}/${fileNames.length} 个）`,
+            '',
+            '## 应用 Spec',
+            specJson,
+            '',
+            `## 当前审核的代码（${fileName}）`,
+            fileContent,
+            '',
+            '## 其他文件的接口摘要',
+            otherSummary,
+            '',
+            '请对照 Spec 审核当前文件。只审核这一份代码文件，关注：事件绑定、选择器匹配、路由跳转、跨文件数据一致性。',
+          ].join('\n'),
+        },
+      ];
+
+      try {
+        const resp = await this.llm.chatStreamingFull(messages, { temperature: 0.3, maxTokens: 4096 });
+        const content = this._extractContent(resp);
+        const parsed = this._parseReviewOutput(content, files);
+
+        if (parsed.corrected) {
+          const valid = Object.values(parsed.corrected).every(
+            (c) => c.trim().length > 0 && c.includes('<!DOCTYPE')
+          );
+          if (valid && !this._hasPlaceholders(parsed.corrected)) {
+            Object.assign(allCorrected, parsed.corrected);
+          }
+        }
+        summaries.push(`[${fileName}] ${parsed.summary}`);
+      } catch (err) {
+        logError(`[GenPipeline] Review ${fileName} failed: ${err.message}`);
+        summaries.push(`[${fileName}] 审核跳过: ${err.message}`);
+      }
     }
-    const messages = [
-      { role: 'system', content: REVIEW_PROMPT },
-      { role: 'user', content: `## 应用 Spec\n${specJson}\n\n## 生成的代码${codeContext}\n\n请对照 Spec 审核以上代码。` },
-    ];
-    const resp = await this.llm.chatStreamingFull(messages, { temperature: 0.3, maxTokens: 4096 });
-    const content = this._extractContent(resp);
-    return this._parseReviewOutput(content, files);
+
+    return {
+      corrected: Object.keys(allCorrected).length > 0 ? allCorrected : null,
+      summary: summaries.join('\n'),
+    };
+  }
+
+  /**
+   * 提取除当前文件外其他文件的接口摘要（函数签名、localStorage key、导航链接）
+   */
+  _extractOtherFileSummary(currentFile, allFiles) {
+    const lines = [];
+    for (const [fileName, content] of Object.entries(allFiles)) {
+      if (fileName === currentFile) continue;
+      lines.push(`### ${fileName}`);
+
+      // 提取 localStorage 操作
+      const setMatches = [...content.matchAll(/localStorage\.setItem\s*\(\s*['"`](\w+)['"`]/g)];
+      const getMatches = [...content.matchAll(/localStorage\.getItem\s*\(\s*['"`](\w+)['"`]/g)];
+      if (setMatches.length) lines.push(`  写入: ${setMatches.map(m => m[1]).join(', ')}`);
+      if (getMatches.length) lines.push(`  读取: ${getMatches.map(m => m[1]).join(', ')}`);
+
+      // 提取导航链接（href）
+      const hrefMatches = [...content.matchAll(/href\s*=\s*['"`]([^'"`]+\.html)['"`]/g)];
+      if (hrefMatches.length) lines.push(`  链接: ${hrefMatches.map(m => m[1]).join(', ')}`);
+
+      // 提取函数签名
+      const fnMatches = [...content.matchAll(/(?:function\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:function|\())/g)];
+      const fns = fnMatches.map(m => m[1] || m[2]).filter(Boolean).slice(0, 10);
+      if (fns.length) lines.push(`  函数: ${fns.join(', ')}`);
+
+      // 提取 DOM id
+      const idMatches = [...content.matchAll(/id\s*=\s*['"`](\w+)['"`]/g)];
+      const ids = idMatches.map(m => m[1]).filter(Boolean).slice(0, 15);
+      if (ids.length) lines.push(`  DOM id: ${ids.join(', ')}`);
+    }
+    return lines.length > 0 ? lines.join('\n') : '（无其他文件）';
   }
 
   // ── 空壳检测 ──

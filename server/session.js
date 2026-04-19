@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { error: logError, info } = require('./core/logger');
 const GLMClient = require('./core/llm/glm-client');
 const SpecEngine = require('./core/spec-engine');
 const CodeGenerator = require('./core/code-generator');
@@ -23,6 +24,7 @@ class SessionManager {
     this.brainstormHistory = [];
     this.activePipeline = null;
     this.sseClients = [];
+    this._lastDoneEvent = null;
 
     // 初始化服务（不序列化）
     this._initServices();
@@ -78,9 +80,23 @@ class SessionManager {
       'Access-Control-Allow-Origin': '*',
     });
     res.write(': connected\n\n');
+
+    // 如果 pipeline 已完成（done 事件已发送），直接重放给新客户端
+    if (this._lastDoneEvent) {
+      res.write(`event: done\ndata: ${JSON.stringify(this._lastDoneEvent)}\n\n`);
+      res.end();
+      return;
+    }
+
+    // 心跳保活：每 15 秒发送 SSE 注释，防止浏览器/代理空闲断开
+    const heartbeat = setInterval(() => {
+      try { res.write(': heartbeat\n\n'); } catch (e) { clearInterval(heartbeat); }
+    }, 15000);
+
     this.sseClients.push(res);
 
     res.on('close', () => {
+      clearInterval(heartbeat);
       this.sseClients = this.sseClients.filter(c => c !== res);
     });
   }
@@ -93,6 +109,7 @@ class SessionManager {
   }
 
   broadcastDone(result) {
+    this._lastDoneEvent = result;
     const data = JSON.stringify(result);
     for (const client of this.sseClients) {
       client.write(`event: done\ndata: ${data}\n\n`);
@@ -108,6 +125,7 @@ class SessionManager {
     this.generatedFiles = {};
     this.conversationHistory = [];
     this.brainstormHistory = [];
+    this._lastDoneEvent = null;
     if (this.activePipeline) {
       this.activePipeline.cancel();
       this.activePipeline = null;
@@ -141,7 +159,7 @@ class SessionStore {
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const session = new SessionManager(id, name || '新会话');
     this.sessions.set(id, session);
-    this.save(id);
+    this.saveSync(id);
     return { id, session };
   }
 
@@ -183,8 +201,12 @@ class SessionStore {
     this.sessions.delete(id);
 
     const filePath = path.join(this.dataDir, `${id}.json`);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (e) {
+      logError(`[SessionStore] Failed to delete ${id}: ${e.message}`);
     }
     return true;
   }
@@ -202,15 +224,44 @@ class SessionStore {
   }
 
   /**
-   * 保存单个会话到文件
+   * 保存单个会话到文件（异步，原子写入）
    */
   save(id) {
     const session = this.sessions.get(id);
     if (!session) return;
 
     const filePath = path.join(this.dataDir, `${id}.json`);
+    const tmpPath = filePath + '.tmp';
     const data = JSON.stringify(session.toJSON(), null, 2);
-    fs.writeFileSync(filePath, data, 'utf-8');
+    fs.writeFile(tmpPath, data, 'utf-8', (err) => {
+      if (err) {
+        logError(`[SessionStore] Failed to save ${id}: ${err.message}`);
+        return;
+      }
+      fs.rename(tmpPath, filePath, (renameErr) => {
+        if (renameErr) {
+          logError(`[SessionStore] Failed to rename ${tmpPath}: ${renameErr.message}`);
+        }
+      });
+    });
+  }
+
+  /**
+   * 同步保存（用于进程退出时的 saveAll）
+   */
+  saveSync(id) {
+    const session = this.sessions.get(id);
+    if (!session) return;
+
+    try {
+      const filePath = path.join(this.dataDir, `${id}.json`);
+      const tmpPath = filePath + '.tmp';
+      const data = JSON.stringify(session.toJSON(), null, 2);
+      fs.writeFileSync(tmpPath, data, 'utf-8');
+      fs.renameSync(tmpPath, filePath);
+    } catch (e) {
+      logError(`[SessionStore] Failed to saveSync ${id}: ${e.message}`);
+    }
   }
 
   /**
@@ -226,10 +277,10 @@ class SessionStore {
         const session = SessionManager.fromJSON(data);
         this.sessions.set(session.id, session);
       } catch (e) {
-        console.error(`[SessionStore] Failed to load ${file}: ${e.message}`);
+        logError(`[SessionStore] Failed to load ${file}: ${e.message}`);
       }
     }
-    console.log(`[SessionStore] Loaded ${this.sessions.size} sessions`);
+    info(`[SessionStore] Loaded ${this.sessions.size} sessions`);
   }
 
   /**
@@ -238,12 +289,12 @@ class SessionStore {
   saveAll() {
     for (const id of this.sessions.keys()) {
       try {
-        this.save(id);
+        this.saveSync(id);
       } catch (e) {
-        console.error(`[SessionStore] Failed to save ${id}: ${e.message}`);
+        logError(`[SessionStore] Failed to save ${id}: ${e.message}`);
       }
     }
-    console.log(`[SessionStore] Saved ${this.sessions.size} sessions`);
+    info(`[SessionStore] Saved ${this.sessions.size} sessions`);
   }
 }
 
