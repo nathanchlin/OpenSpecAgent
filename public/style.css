@@ -519,6 +519,33 @@ body {
 .gen-step-detail.visible { display: block; }
 .gen-step.completed .gen-step-title { cursor: pointer; }
 
+/* 文件进度列表 */
+.gen-file-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.gen-file-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #11111b;
+}
+.gen-file-icon { font-size: 10px; flex-shrink: 0; }
+.gen-file-name { color: #cdd6f4; flex: 1; }
+.gen-file-status { color: #585b70; font-size: 10px; }
+.gen-file-item.file-generating .gen-file-icon { color: #cba6f7; animation: pulse 1.2s ease-in-out infinite; }
+.gen-file-item.file-generating .gen-file-status { color: #cba6f7; }
+.gen-file-item.file-done .gen-file-icon { color: #a6e3a1; }
+.gen-file-item.file-done .gen-file-status { color: #a6e3a1; }
+.gen-file-item.file-failed .gen-file-icon { color: #f38ba8; }
+.gen-file-item.file-failed .gen-file-status { color: #f38ba8; }
+.gen-file-item.file-waiting .gen-file-icon { color: #45475a; }
+
 /* 取消按钮 */
 .gen-cancel-btn {
   margin-top: 10px;

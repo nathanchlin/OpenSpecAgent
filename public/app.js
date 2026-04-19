@@ -777,6 +777,25 @@ function updateStepper(specCard, event) {
     }
   }
 
+  // 渲染文件进度列表
+  if (event.fileStatuses && event.step === 'execute') {
+    let fileListEl = stepEl.querySelector('.gen-file-list');
+    if (!fileListEl) {
+      fileListEl = document.createElement('div');
+      fileListEl.className = 'gen-file-list';
+      stepEl.querySelector('.gen-step-content').appendChild(fileListEl);
+    }
+    const STATUS_ICON = { waiting: '\u25CB', generating: '\u25CF', done: '\u2713', failed: '\u2717' };
+    const STATUS_CLASS = { waiting: 'file-waiting', generating: 'file-generating', done: 'file-done', failed: 'file-failed' };
+    fileListEl.innerHTML = event.fileStatuses.map(f =>
+      `<div class="gen-file-item ${STATUS_CLASS[f.status] || ''}">` +
+      `<span class="gen-file-icon">${STATUS_ICON[f.status] || '\u25CB'}</span>` +
+      `<span class="gen-file-name">${escapeHtml(f.file)}</span>` +
+      `<span class="gen-file-status">${f.status === 'generating' ? '生成中...' : f.status === 'done' ? '完成' : f.status === 'failed' ? '失败' : '等待'}</span>` +
+      `</div>`
+    ).join('');
+  }
+
   if (event.error && event.status === 'failed') {
     statusEl.textContent = '失败: ' + event.error;
   }

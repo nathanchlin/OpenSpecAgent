@@ -317,13 +317,17 @@ class GenPipeline {
     const sharedStyles = this._extractSharedStyles(spec);
     const routeTable = this._extractRouteTable(spec, pageList);
     const totalPages = pageList.length;
-    let completedCount = 0;
 
-    this._emit(stepIndex, 'running', null, `正在生成 0/${totalPages}...`);
+    // 文件状态跟踪
+    const fileStatuses = pageList.map(p => ({ file: p.file, title: p.title, status: 'waiting' }));
+    this._emitFiles(stepIndex, fileStatuses);
 
-    // 并行生成所有文件，每完成一个发进度
+    // 并行生成所有文件，每完成一个更新状态
     const tasks = pageList.map(async (page, idx) => {
       if (this.cancelled) return null;
+
+      fileStatuses[idx].status = 'generating';
+      this._emitFiles(stepIndex, fileStatuses);
 
       const filePlan = this._extractFilePlan(planText, page.file);
       const dataInterface = this._extractDataInterface(allFiles);
@@ -333,8 +337,8 @@ class GenPipeline {
         sharedStyles, routeTable, dataInterface
       );
 
-      completedCount++;
-      this._emit(stepIndex, 'running', null, `正在生成 ${completedCount}/${totalPages}...`);
+      fileStatuses[idx].status = fileResult ? 'done' : 'failed';
+      this._emitFiles(stepIndex, fileStatuses);
 
       if (fileResult) {
         debug(`[GenPipeline] Generated ${page.file}: ${fileResult.length} chars`);
@@ -645,6 +649,19 @@ class GenPipeline {
       status,
       output: typeof output === 'string' ? output : (output ? JSON.stringify(output) : null),
       error,
+      timestamp: Date.now(),
+    });
+  }
+
+  _emitFiles(stepIndex, fileStatuses) {
+    const step = STEPS[stepIndex];
+    if (!step) return;
+    this.onProgress({
+      step: step.key,
+      stepIndex,
+      stepLabel: step.label,
+      status: 'running',
+      fileStatuses,
       timestamp: Date.now(),
     });
   }
