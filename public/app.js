@@ -171,30 +171,29 @@ async function switchSession(id) {
     el.classList.toggle('active', el.dataset.id === id);
   });
 
-  // 加载对话历史
-  try {
-    const history = await apiFetch(`/api/sessions/${id}/history`);
-    if (activeSessionId === id) renderHistory(history);
-  } catch (e) {
-    if (activeSessionId === id) messagesEl.innerHTML = '';
-  }
+  // 并行加载会话数据
+  const [history, spec, files] = await Promise.all([
+    apiFetch(`/api/sessions/${id}/history`).catch(() => []),
+    apiFetch(`/api/sessions/${id}/spec`).catch(() => null),
+    apiFetch(`/api/sessions/${id}/files`).catch(() => []),
+  ]);
 
-  // 加载 spec
-  try {
-    const spec = await apiFetch(`/api/sessions/${id}/spec`);
-    if (activeSessionId === id) currentSpec = spec;
-  } catch (e) {
-    if (activeSessionId === id) currentSpec = null;
+  if (activeSessionId !== id) return;
+
+  currentSpec = spec;
+  renderHistory(history);
+
+  // 如果有已生成的文件，追加完成状态
+  if (files.length > 0) {
+    renderCompletionSummary(files);
   }
 
   // 更新 header 和预览
-  if (activeSessionId !== id) return;
   const item = document.querySelector(`.session-item[data-id="${id}"]`);
   const nameEl = item ? item.querySelector('.session-item-name') : null;
-  // 读取纯名称（排除状态图标的 text）
   chatHeaderEl.textContent = nameEl?.firstChild?.textContent || 'OpenSpecAgent';
 
-  if (item && item.dataset.hasFiles === '1') {
+  if (files.length > 0) {
     loadPreview();
   } else {
     previewFrame.src = 'about:blank';
@@ -202,6 +201,19 @@ async function switchSession(id) {
   }
 
   inputEl.focus();
+}
+
+function renderCompletionSummary(files) {
+  const fileItems = files.map(f => {
+    const icon = '\u2713';
+    return `<div class="gen-file-item file-done"><span class="gen-file-icon">${icon}</span><span class="gen-file-name">${escapeHtml(f)}</span><span class="gen-file-status">完成</span></div>`;
+  }).join('');
+
+  const summaryHTML = `<div class="gen-summary">生成完成！共 ${files.length} 个文件。</div>` +
+    `<div class="gen-file-list">${fileItems}</div>`;
+
+  messagesEl.insertAdjacentHTML('beforeend', summaryHTML);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function renderHistory(history) {

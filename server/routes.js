@@ -162,7 +162,7 @@ function createRoutes(store) {
     }
   });
 
-  // ── Spec & History ──
+  // ── Spec & History & Files ──
 
   router.get('/sessions/:id/spec', (req, res) => {
     const session = getSession(req, res);
@@ -174,6 +174,12 @@ function createRoutes(store) {
     const session = getSession(req, res);
     if (!session) return;
     res.json(session.conversationHistory);
+  });
+
+  router.get('/sessions/:id/files', (req, res) => {
+    const session = getSession(req, res);
+    if (!session) return;
+    res.json(Object.keys(session.generatedFiles || {}));
   });
 
   // ═══════════════════════════════════════
